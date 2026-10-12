@@ -22,14 +22,20 @@ def make_slant_edge(h=300, w=400, sigma=1.0, angle_deg=5.0, x0=None):
     return (esf * 255).astype(np.uint8)
 
 
-def synth_chart_from_ref(cell=60, pad=6):
+def synth_chart_from_ref(cell=50, gap=6, margin=18):
+    """贴近真实 ColorChecker: 色块间有间隙、四周黑色衬底。"""
     ref = np.array(refs.CC24_POST2014_D50)
     rgb = colorcheck.lab_to_srgb(ref)
     rows, cols = 4, 6
-    img = np.zeros((rows * cell, cols * cell, 3), np.uint8)
+    pitch = cell + gap
+    Wt = cols * pitch + margin * 2 - gap
+    Ht = rows * pitch + margin * 2 - gap
+    img = np.zeros((Ht, Wt, 3), np.uint8)
     for i in range(rows * cols):
         r, c = divmod(i, cols)
-        img[r * cell:(r + 1) * cell, c * cell:(c + 1) * cell] = rgb[i]
+        y0 = margin + r * pitch
+        x0 = margin + c * pitch
+        img[y0:y0 + cell, x0:x0 + cell] = rgb[i]
     return img
 
 

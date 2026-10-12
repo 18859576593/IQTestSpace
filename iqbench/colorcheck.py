@@ -152,3 +152,15 @@ def analyze(img_rgb, roi, ref_lab, rows, cols, inner=0.4):
     rgb = sample_patches(img_rgb, roi, rows, cols, inner)
     lab = srgb_to_lab(rgb)
     return CCResult(ref_lab, lab, rgb)
+
+
+def analyze_rects(img_rgb, patch_rects, ref_lab, inner=0.5):
+    """按显式色块矩形采样(自动识别路径)。patch_rects: [(x,y,w,h)]"""
+    out = []
+    for (x, y, w, h) in patch_rects:
+        x0 = int(x + w * (0.5 - inner / 2)); x1 = int(x + w * (0.5 + inner / 2))
+        y0 = int(y + h * (0.5 - inner / 2)); y1 = int(y + h * (0.5 + inner / 2))
+        patch = np.asarray(img_rgb)[y0:y1, x0:x1]
+        out.append(patch.reshape(-1, 3).mean(axis=0) if patch.size else np.zeros(3))
+    rgb = np.array(out, dtype=np.uint8)
+    return CCResult(ref_lab, srgb_to_lab(rgb), rgb)

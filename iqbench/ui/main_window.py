@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 
 from .theme import QSS, ACCENT, WARN, MONO
 from .plot import LinePlot
-from .. import refs, colorcheck, sfr, __version__
+from .. import refs, colorcheck, sfr, chartdetect, __version__
 
 
 def imread_unicode(path):
@@ -98,6 +98,15 @@ class ImageViewer(QGraphicsView):
             it = self.scene().addRect(roi[0], roi[1], roi[2], roi[3],
                                       QColor(ACCENT), QColor(0, 0, 0, 0))
             self._overlays.append(it)
+        for (x, y, w, h), ok in getattr(self, "_boxes", []):
+            color = QColor("#2E9E44") if ok else QColor(WARN)
+            self._overlays.append(
+                self.scene().addRect(x, y, w, h, color, QColor(0, 0, 0, 0)))
+
+    def set_boxes(self, boxes):
+        """boxes: [((x,y,w,h), ok), ...] 自动识别色块框"""
+        self._boxes = boxes
+        self._draw_overlays()
 
     def get_roi(self):
         return getattr(self, "_roi", None)
@@ -179,6 +188,11 @@ class ColorTab(QWidget):
         self.btn = QPushButton("分 析")
         self.btn.clicked.connect(self.analyze)
         f.addRow(self.btn)
+        self.btn_auto = QPushButton("自动识别色块")
+        self.btn_auto.setStyleSheet(
+            "background: #FFFFFF; color: #0F766E; border: 1px solid #0F766E;")
+        self.btn_auto.clicked.connect(self.auto_detect)
+        f.addRow(self.btn_auto)
         rv.addWidget(g1)
         self.m_e00 = MetricLabel("平均 ΔE2000"); self.m_e76 = MetricLabel("平均 ΔE76")
         self.m_c = MetricLabel("平均 ΔC76"); self.m_wb = MetricLabel("WB误差(灰块ΔE00)")
@@ -203,19 +217,46 @@ class ColorTab(QWidget):
     def load(self, arr, path):
         self.img = arr
         self.path = path
+        self.patch_rects = None
+        self.viewer._boxes = []
         self.viewer.set_image(arr)
+
+    def auto_detect(self):
+        if self.img is None:
+            self.log("请先打开图像"); return
+        rects, oks, n = chartdetect.detect_patches(
+            self.img, self.sp_rows.value(), self.sp_cols.value())
+        if rects is None:
+            self.viewer._boxes = []
+            self.viewer._draw_overlays()
+            self.log("自动识别失败 — 请改用框选整卡区域(确保色卡完整、光线均匀)")
+            return
+        self.patch_rects = rects
+        self.viewer.set_boxes(list(zip(rects, oks)))
+        miss = len(rects) - n
+        if miss:
+            self.log(f"识别到 {n}/{len(rects)} 块(橙色为推补), 可直接分析或手动框选修正")
+        else:
+            self.log(f"识别 {n}/{len(rects)} 块完成 — 直接点「分析」")
+        self.analyze()
 
     def analyze(self):
         if self.img is None:
             self.log("请先打开图像"); return
-        roi = self.viewer.get_roi()
-        if not roi:
-            self.log("请先在图上框选色卡区域(拖拽)"); return
         try:
-            self.result = colorcheck.analyze(
-                self.img, roi, refs.CC24_POST2014_D50,
-                self.sp_rows.value(), self.sp_cols.value(),
-                self.sp_inner.value())
+            if getattr(self, "patch_rects", None):
+                self.result = colorcheck.analyze_rects(
+                    self.img, self.patch_rects, refs.CC24_POST2014_D50,
+                    self.sp_inner.value())
+            else:
+                roi = self.viewer.get_roi()
+                if not roi:
+                    self.log("请先「自动识别色块」, 或在图上框选色卡区域(拖拽)")
+                    return
+                self.result = colorcheck.analyze(
+                    self.img, roi, refs.CC24_POST2014_D50,
+                    self.sp_rows.value(), self.sp_cols.value(),
+                    self.sp_inner.value())
         except Exception as e:
             self.log(f"分析失败: {e}"); return
         r = self.result
