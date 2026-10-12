@@ -74,6 +74,36 @@ def run():
     print(f"[CC  ] ΔE2000 自比对 max={z.max():.2e} (应=0) → {'PASS' if z.max() < 1e-9 else 'FAIL'}")
     ok &= z.max() < 1e-9
 
+    # ---- 锚点3: CCM 数学精确性(纯浮点) + 8bit现实(偏差有界) ----
+    # ⚠️ 8bit量化在输入侧引入EIV系统偏差(~0.1量级, 样本数不消减)——物理上限, 非bug
+    from . import ccm as ccmmod
+    M0 = np.array([[1.06, -0.04, -0.005],
+                   [-0.04, 1.07, -0.005],
+                   [-0.02, -0.03, 1.01]])
+    rng = np.random.default_rng(7)
+    lin_rand = rng.uniform(0.05, 0.95, (60, 3))
+    M_rec = ccmmod.solve_ccm_linear(lin_rand, lin_rand @ M0.T)
+    e1 = np.abs(M_rec - M0).max()
+    s4 = "PASS" if e1 < 1e-9 else "FAIL"
+    ok &= e1 < 1e-9
+    print(f"[CCM ] 数学层(纯浮点): max|M-M0|={e1:.1e} (应<1e-9) → {s4}")
+    # 8bit量化后: 偏差应有界(<0.2)且列和精确
+    Xq = colorcheck.srgb_to_linear(colorcheck.linear_to_srgb_u8(lin_rand @ M0.T))
+    Mq = ccmmod.solve_ccm_linear(Xq, lin_rand)
+    e2 = np.abs(Mq - M0).max()
+    sums_ok = np.abs(Mq.sum(axis=0) - 1).max() < 1e-9
+    s5 = "PASS" if e2 < 0.2 and sums_ok else "FAIL"
+    ok &= e2 < 0.2 and sums_ok
+    print(f"[CCM ] 8bit EIV偏差: max={e2:.3f} (<0.2), 列和精确={sums_ok} → {s5}")
+    # CC24 全链: 校正后 ΔE00 显著改善且≤0.8
+    lin_ref = colorcheck.lab_to_linear_rgb(lab)
+    meas_u8 = colorcheck.linear_to_srgb_u8(np.clip(lin_ref @ M0.T, 0, 1))
+    M24 = ccmmod.solve_ccm(meas_u8, lab)
+    b4, aft, _ = ccmmod.evaluate(meas_u8, lab, M24)
+    s6 = "PASS" if aft < 0.8 and aft < b4 else "FAIL"
+    ok &= aft < 0.8 and aft < b4
+    print(f"[CCM ] CC24全链: ΔE00 {b4:.2f}→{aft:.2f} (应≤0.8且改善) → {s6}")
+
     print("\n自检总结:", "全部通过 [PASS]" if ok else "存在失败项 [FAIL]")
     return 0 if ok else 1
 

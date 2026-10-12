@@ -20,10 +20,15 @@ _EPS = 216.0 / 24389.0
 _KAPPA = 24389.0 / 27.0
 
 
+def srgb_to_linear(rgb_u8):
+    """sRGB 8bit → 线性 RGB(D65), (N,3)。"""
+    c = np.asarray(rgb_u8, dtype=np.float64) / 255.0
+    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+
+
 def srgb_to_lab(rgb_u8):
     """rgb_u8: (N,3) uint8/float 0~255 → (N,3) Lab(D50)。"""
-    c = np.asarray(rgb_u8, dtype=np.float64) / 255.0
-    lin = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    lin = srgb_to_linear(rgb_u8)
     xyz = lin @ _M_RGB2XYZ.T
     xyz = xyz @ _M_BRADFORD.T
     t = xyz / _WP_D50
@@ -34,8 +39,8 @@ def srgb_to_lab(rgb_u8):
     return np.stack([L, a, b], axis=1)
 
 
-def lab_to_srgb(lab):
-    """Lab(D50) → sRGB 8bit (合成自检用)。"""
+def lab_to_linear_rgb(lab):
+    """Lab(D50) → 线性 RGB(D65), (N,3)。"""
     L, a, b = lab[:, 0], lab[:, 1], lab[:, 2]
     fy = (L + 16.0) / 116.0
     fx = fy + a / 500.0
@@ -44,9 +49,19 @@ def lab_to_srgb(lab):
         f3 = f ** 3
         return np.where(f3 > _EPS, f3, (116.0 * f - 16.0) / _KAPPA)
     xyz = np.stack([finv(fx), finv(fy), finv(fz)], axis=1) * _WP_D50
-    lin = xyz @ np.linalg.inv(_M_BRADFORD.T) @ np.linalg.inv(_M_RGB2XYZ.T)
-    srgb = np.where(lin <= 0.0031308, 12.92 * lin, 1.055 * np.clip(lin, 0, None) ** (1 / 2.4) - 0.055)
+    return xyz @ np.linalg.inv(_M_BRADFORD.T) @ np.linalg.inv(_M_RGB2XYZ.T)
+
+
+def linear_to_srgb_u8(lin):
+    """线性 RGB(D65) → sRGB 8bit (clip 到 [0,1])。"""
+    srgb = np.where(lin <= 0.0031308, 12.92 * lin,
+                    1.055 * np.clip(lin, 0, None) ** (1 / 2.4) - 0.055)
     return np.clip(srgb * 255.0 + 0.5, 0, 255).astype(np.uint8)
+
+
+def lab_to_srgb(lab):
+    """Lab(D50) → sRGB 8bit (合成自检用)。"""
+    return linear_to_srgb_u8(lab_to_linear_rgb(lab))
 
 
 def delta_e76(ref, meas):

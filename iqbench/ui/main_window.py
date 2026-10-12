@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 
 from .theme import QSS, ACCENT, WARN, MONO
 from .plot import LinePlot
-from .. import refs, colorcheck, sfr, chartdetect, __version__
+from .. import refs, colorcheck, sfr, chartdetect, ccm, __version__
 
 
 def imread_unicode(path):
@@ -201,6 +201,23 @@ class ColorTab(QWidget):
         g2 = QGroupBox("参考色(上) vs 实测色(下)")
         v2 = QVBoxLayout(g2); self.swatch = SwatchStrip(); v2.addWidget(self.swatch)
         rv.addWidget(g2)
+        # CCM 面板
+        g3 = QGroupBox("CCM 校正矩阵 (线性RGB域, 列和=1 保中性)")
+        v3 = QVBoxLayout(g3)
+        self.lbl_ccm = QLabel("—")
+        self.lbl_ccm.setFont(MONO_FONT())
+        v3.addWidget(self.lbl_ccm)
+        self.lbl_ccm_q8 = QLabel("")
+        self.lbl_ccm_q8.setFont(MONO_FONT())
+        self.lbl_ccm_q8.setStyleSheet("color:#5B6470; font-size:11px;")
+        v3.addWidget(self.lbl_ccm_q8)
+        self.lbl_ccm_de = QLabel("")
+        v3.addWidget(self.lbl_ccm_de)
+        btn_copy = QPushButton("复制矩阵 (泰芯Q8)")
+        btn_copy.setStyleSheet("background:#FFFFFF; color:#0F766E; border:1px solid #0F766E;")
+        btn_copy.clicked.connect(self.copy_ccm)
+        v3.addWidget(btn_copy)
+        rv.addWidget(g3)
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
             ["#", "色块", "参考 L*a*b*", "实测 L*a*b*", "ΔE00", "ΔE76", "ΔC76"])
@@ -277,6 +294,29 @@ class ColorTab(QWidget):
                     item.setFont(MONO_FONT())
                 self.table.setItem(i, c, item)
         self.log(f"ColorChecker 完成: meanΔE00={r.mean_e00:.2f} max={r.max_e00:.2f}")
+        # CCM 自动求解
+        try:
+            self.ccm_M = ccm.solve_ccm(r.meas_rgb, r.ref_lab)
+            b4, aft, _ = ccm.evaluate(r.meas_rgb, r.ref_lab, self.ccm_M)
+            self.lbl_ccm.setText(ccm.matrix_text(self.ccm_M))
+            q8 = ccm.to_q8(self.ccm_M)
+            self.lbl_ccm_q8.setText("Q8(x256):\n" + ccm.matrix_text(q8.astype(float), 0))
+            self.lbl_ccm_de.setText(
+                f"校正前后 ΔE2000: {b4:.2f} → {aft:.2f}"
+                + ("  (列和=1 ✓)" if abs(self.ccm_M.sum(axis=0) - 1).max() < 1e-9 else ""))
+            self.log(f"CCM 完成: ΔE00 {b4:.2f}→{aft:.2f}")
+        except Exception as e:
+            self.ccm_M = None
+            self.lbl_ccm.setText(f"CCM 求解失败: {e}")
+
+    def copy_ccm(self):
+        from PySide6.QtWidgets import QApplication
+        if getattr(self, "ccm_M", None) is None:
+            self.log("尚无 CCM 结果"); return
+        Q = ccm.to_q8(self.ccm_M)
+        txt = "\n".join("  ".join(str(int(v)) for v in row) for row in Q)
+        QApplication.clipboard().setText(txt)
+        self.log("Q8 矩阵已复制到剪贴板 (行=输入通道, 列和≈256)")
 
     def save_report(self, folder):
         r = self.result
@@ -295,6 +335,15 @@ class ColorTab(QWidget):
             w.writerow([])
             w.writerow(["mean_dE00", round(r.mean_e00, 3), "mean_dE76", round(r.mean_e76, 3),
                         "mean_dC76", round(r.mean_c76, 3), "WB_gray_dE00", round(r.wb_error, 3)])
+            M = getattr(self, "ccm_M", None)
+            if M is not None:
+                from .. import ccm as ccmmod
+                w.writerow([])
+                w.writerow(["CCM(线性RGB,列和=1)"] + [])
+                for row in ccmmod.matrix_text(M).splitlines():
+                    w.writerow(row.split())
+                for row in ccmmod.to_q8(M):
+                    w.writerow(["Q8"] + [int(v) for v in row])
         return fp
 
 
