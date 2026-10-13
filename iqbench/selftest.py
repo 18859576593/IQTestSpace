@@ -104,6 +104,24 @@ def run():
     ok &= aft < 0.8 and aft < b4
     print(f"[CCM ] CC24全链: ΔE00 {b4:.2f}→{aft:.2f} (应≤0.8且改善) → {s6}")
 
+    # ---- 锚点4: 亮度归一化不变性 (Imatest 默认口径的核心性质) ----
+    dark = colorcheck.linear_to_srgb_u8(
+        colorcheck.srgb_to_linear(chart) * 0.7)          # 欠曝30%的同一张卡
+    r_full = colorcheck.analyze(chart, (0, 0, chart.shape[1], chart.shape[0]),
+                                refs.CC24_POST2014_D50, 4, 6)
+    r_dark = colorcheck.analyze(dark, (0, 0, dark.shape[1], dark.shape[0]),
+                                refs.CC24_POST2014_D50, 4, 6)
+    n_full = colorcheck.analyze_normalized(chart, (0, 0, chart.shape[1], chart.shape[0]),
+                                           refs.CC24_POST2014_D50, 4, 6)
+    n_dark = colorcheck.analyze_normalized(dark, (0, 0, dark.shape[1], dark.shape[0]),
+                                           refs.CC24_POST2014_D50, 4, 6)
+    diff = abs(n_full.mean_e00 - n_dark.mean_e00)
+    raw_gap = r_dark.mean_e00 - r_full.mean_e00
+    s7 = "PASS" if diff < 0.25 and raw_gap > 0.3 else "FAIL"   # 0.25=暗图8bit量化底
+    ok &= diff < 0.25 and raw_gap > 0.3
+    print(f"[CC-N] 欠曝30%: 未归一ΔE00 {r_full.mean_e00:.2f}→{r_dark.mean_e00:.2f}(应显著升), "
+          f"归一后 {n_full.mean_e00:.3f}→{n_dark.mean_e00:.3f} (差{diff:.3f}<0.1) → {s7}")
+
     print("\n自检总结:", "全部通过 [PASS]" if ok else "存在失败项 [FAIL]")
     return 0 if ok else 1
 

@@ -128,6 +128,24 @@ def sample_patches(img_rgb, roi, rows, cols, inner=0.4):
     return np.array(out, dtype=np.uint8)
 
 
+def delta_c2000(ref, meas):
+    """ΔC2000: CIEDE2000 的纯色度分量(kL 置无穷大, 明度差不计)。"""
+    L1, a1, b1 = np.asarray(ref).T
+    L2, a2, b2 = np.asarray(meas).T
+    C1 = np.hypot(a1, b1)
+    C2 = np.hypot(a2, b2)
+    Cb = 0.5 * (C1 + C2)
+    G = 0.5 * (1 - np.sqrt(Cb ** 7 / (Cb ** 7 + 25 ** 7)))
+    ap1 = (1 + G) * a1
+    ap2 = (1 + G) * a2
+    Cp1 = np.hypot(ap1, b1)
+    Cp2 = np.hypot(ap2, b2)
+    dC = Cp2 - Cp1
+    Cbp = 0.5 * (Cp1 + Cp2)
+    Sc = 1 + 0.045 * Cbp
+    return np.abs(dC) / Sc
+
+
 class CCResult:
     def __init__(self, ref_lab, meas_lab, meas_rgb):
         self.ref_lab = np.asarray(ref_lab)
@@ -136,6 +154,7 @@ class CCResult:
         self.de76 = delta_e76(self.ref_lab, self.meas_lab)
         self.dc76 = delta_c76(self.ref_lab, self.meas_lab)
         self.de00 = delta_e2000(self.ref_lab, self.meas_lab)
+        self.dc00 = delta_c2000(self.ref_lab, self.meas_lab)
 
     @property
     def mean_e00(self):
@@ -150,14 +169,26 @@ class CCResult:
         return float(self.dc76.mean())
 
     @property
+    def mean_c00(self):
+        return float(self.dc00.mean())
+
+    @property
     def max_e00(self):
         return float(self.de00.max())
 
     @property
+    def chroma_ratio(self):
+        """平均色度比 (实测C*/参考C*, >1=偏艳)。诊断整体饱和度漂移。"""
+        c_ref = np.hypot(self.ref_lab[:, 1], self.ref_lab[:, 2])
+        c_meas = np.hypot(self.meas_lab[:, 1], self.meas_lab[:, 2])
+        m = c_ref > 5   # 灰块不参与(色度本身接近0, 比值发散)
+        return float(np.mean(c_meas[m] / c_ref[m])) if m.any() else float("nan")
+
+    @property
     def wb_error(self):
-        """白平衡误差代理口径: 灰块(末行) ΔE2000 均值。经验对照, 非 Imatest 原文。"""
-        gray = [i for i in GRAY_IDS if i < len(self.de00)]
-        return float(self.de00[gray].mean()) if gray else float("nan")
+        """白平衡误差 (Imatest 口径): 灰块 ΔC2000 均值。"""
+        gray = [i for i in GRAY_IDS if i < len(self.dc00)]
+        return float(self.dc00[gray].mean()) if gray else float("nan")
 
 
 GRAY_IDS = list(range(18, 24))
@@ -167,6 +198,43 @@ def analyze(img_rgb, roi, ref_lab, rows, cols, inner=0.4):
     rgb = sample_patches(img_rgb, roi, rows, cols, inner)
     lab = srgb_to_lab(rgb)
     return CCResult(ref_lab, lab, rgb)
+
+
+def luminance_normalize(meas_rgb_u8, ref_lab):
+    """Imatest 式亮度归一化: 实测线性RGB乘全局标量, 使平均线性亮度(Y)匹配参考。
+    曝光/增益误差不再混入色差。返回归一化后的 sRGB 8bit。"""
+    lin = srgb_to_linear(meas_rgb_u8)
+    y_meas = float((lin @ np.array([0.2126, 0.7152, 0.0722])).mean())
+    y_ref = float((lab_to_linear_rgb(np.asarray(ref_lab, dtype=float))
+                  @ np.array([0.2126, 0.7152, 0.0722])).mean())
+    if y_meas <= 0:
+        return meas_rgb_u8
+    return linear_to_srgb_u8(np.clip(lin * (y_ref / y_meas), 0, 1))
+
+
+def lab_from_linear(lin):
+    """线性RGB(D65) → Lab(D50), 全程浮点。"""
+    xyz = lin @ _M_RGB2XYZ.T @ _M_BRADFORD.T
+    t = xyz / _WP_D50
+    f = np.where(t > _EPS, np.cbrt(t), (_KAPPA * t + 16.0) / 116.0)
+    return np.stack([116.0 * f[:, 1] - 16.0,
+                     500.0 * (f[:, 0] - f[:, 1]),
+                     200.0 * (f[:, 1] - f[:, 2])], axis=1)
+
+
+def analyze_normalized(img_or_rgb, roi_or_rects, ref_lab, rows, cols,
+                       inner=0.4, use_rects=False):
+    """Imatest 默认口径: 实测亮度全局归一后求色差 (纯浮点, 无二次量化)。"""
+    if use_rects:
+        base = analyze_rects(img_or_rgb, roi_or_rects, ref_lab, inner)
+    else:
+        base = analyze(img_or_rgb, roi_or_rects, ref_lab, rows, cols, inner)
+    lin = srgb_to_linear(base.meas_rgb)
+    y_meas = float((lin @ np.array([0.2126, 0.7152, 0.0722])).mean())
+    y_ref = float((lab_to_linear_rgb(np.asarray(ref_lab, dtype=float))
+                  @ np.array([0.2126, 0.7152, 0.0722])).mean())
+    k = y_ref / y_meas if y_meas > 0 else 1.0
+    return CCResult(ref_lab, lab_from_linear(lin * k), base.meas_rgb)
 
 
 def analyze_rects(img_rgb, patch_rects, ref_lab, inner=0.5):

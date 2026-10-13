@@ -194,9 +194,10 @@ class ColorTab(QWidget):
         self.btn_auto.clicked.connect(self.auto_detect)
         f.addRow(self.btn_auto)
         rv.addWidget(g1)
-        self.m_e00 = MetricLabel("平均 ΔE2000"); self.m_e76 = MetricLabel("平均 ΔE76")
-        self.m_c = MetricLabel("平均 ΔC76"); self.m_wb = MetricLabel("WB误差(灰块ΔE00)")
-        for m in (self.m_e00, self.m_e76, self.m_c, self.m_wb):
+        self.m_e00 = MetricLabel("平均 ΔE2000 (亮度归一化)"); self.m_e00raw = MetricLabel("平均 ΔE2000 (未归一)")
+        self.m_c = MetricLabel("平均 ΔC2000"); self.m_wb = MetricLabel("WB 误差 (灰块 ΔC2000)")
+        self.m_chroma = MetricLabel("平均色度比 实测/参考")
+        for m in (self.m_e00, self.m_e00raw, self.m_c, self.m_wb, self.m_chroma):
             rv.addWidget(m)
         g2 = QGroupBox("参考色(上) vs 实测色(下)")
         v2 = QVBoxLayout(g2); self.swatch = SwatchStrip(); v2.addWidget(self.swatch)
@@ -262,25 +263,35 @@ class ColorTab(QWidget):
             self.log("请先打开图像"); return
         try:
             if getattr(self, "patch_rects", None):
-                self.result = colorcheck.analyze_rects(
+                base = colorcheck.analyze_rects(
                     self.img, self.patch_rects, refs.CC24_POST2014_D50,
                     self.sp_inner.value())
+                r = colorcheck.analyze_normalized(
+                    self.img, self.patch_rects, refs.CC24_POST2014_D50,
+                    self.sp_inner.value(), use_rects=True)
             else:
                 roi = self.viewer.get_roi()
                 if not roi:
                     self.log("请先「自动识别色块」, 或在图上框选色卡区域(拖拽)")
                     return
-                self.result = colorcheck.analyze(
+                base = colorcheck.analyze(
+                    self.img, roi, refs.CC24_POST2014_D50,
+                    self.sp_rows.value(), self.sp_cols.value(),
+                    self.sp_inner.value())
+                r = colorcheck.analyze_normalized(
                     self.img, roi, refs.CC24_POST2014_D50,
                     self.sp_rows.value(), self.sp_cols.value(),
                     self.sp_inner.value())
         except Exception as e:
             self.log(f"分析失败: {e}"); return
-        r = self.result
+        self.result_raw = base
+        self.result = r
         self.m_e00.set(f"{r.mean_e00:.2f}", r.mean_e00 > 5)
-        self.m_e76.set(f"{r.mean_e76:.2f}")
-        self.m_c.set(f"{r.mean_c76:.2f}")
+        self.m_e00raw.set(f"{base.mean_e00:.2f}")
+        self.m_c.set(f"{r.mean_c00:.2f}")
         self.m_wb.set(f"{r.wb_error:.2f}", r.wb_error > 3)
+        cr = r.chroma_ratio
+        self.m_chroma.set(f"{cr*100:.0f}%" if np.isfinite(cr) else "—", not (0.85 < cr < 1.15))
         self.swatch.set_pairs(r.ref_lab, r.meas_rgb)
         self.table.setRowCount(len(r.de00))
         for i in range(len(r.de00)):
