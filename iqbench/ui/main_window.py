@@ -268,7 +268,7 @@ class ColorTab(QWidget):
                     self.sp_inner.value())
                 r = colorcheck.analyze_normalized(
                     self.img, self.patch_rects, refs.CC24_POST2014_D50,
-                    self.sp_inner.value(), use_rects=True)
+                    inner=self.sp_inner.value(), use_rects=True)
             else:
                 roi = self.viewer.get_roi()
                 if not roi:
@@ -280,8 +280,8 @@ class ColorTab(QWidget):
                     self.sp_inner.value())
                 r = colorcheck.analyze_normalized(
                     self.img, roi, refs.CC24_POST2014_D50,
-                    self.sp_rows.value(), self.sp_cols.value(),
-                    self.sp_inner.value())
+                    rows=self.sp_rows.value(), cols=self.sp_cols.value(),
+                    inner=self.sp_inner.value())
         except Exception as e:
             self.log(f"分析失败: {e}"); return
         self.result_raw = base
@@ -304,16 +304,22 @@ class ColorTab(QWidget):
                 if c >= 4:
                     item.setFont(MONO_FONT())
                 self.table.setItem(i, c, item)
-        self.log(f"ColorChecker 完成: meanΔE00={r.mean_e00:.2f} max={r.max_e00:.2f}")
-        # CCM 自动求解
+        self.log(f"ColorChecker 完成: 归一化ΔE00={r.mean_e00:.2f} (未归一 {base.mean_e00:.2f})")
+        # CCM 自动求解 (归一化域, 与 Imatest 口径一致)
         try:
-            self.ccm_M = ccm.solve_ccm(r.meas_rgb, r.ref_lab)
-            b4, aft, _ = ccm.evaluate(r.meas_rgb, r.ref_lab, self.ccm_M)
+            lin = getattr(r, "norm_lin", None)
+            if lin is None:
+                lin = colorcheck.srgb_to_linear(r.meas_rgb)
+            ref_lin = colorcheck.lab_to_linear_rgb(r.ref_lab)
+            self.ccm_M = ccm.solve_ccm_linear(lin, ref_lin)
+            corr_lab = colorcheck.lab_from_linear(np.clip(lin @ self.ccm_M.T, 0, None))
+            after = colorcheck.CCResult(r.ref_lab, corr_lab, r.meas_rgb)
+            b4, aft = r.mean_e00, after.mean_e00
             self.lbl_ccm.setText(ccm.matrix_text(self.ccm_M))
             q8 = ccm.to_q8(self.ccm_M)
             self.lbl_ccm_q8.setText("Q8(x256):\n" + ccm.matrix_text(q8.astype(float), 0))
             self.lbl_ccm_de.setText(
-                f"校正前后 ΔE2000: {b4:.2f} → {aft:.2f}"
+                f"校正前后 ΔE2000(归一化域): {b4:.2f} → {aft:.2f}"
                 + ("  (列和=1 ✓)" if abs(self.ccm_M.sum(axis=0) - 1).max() < 1e-9 else ""))
             self.log(f"CCM 完成: ΔE00 {b4:.2f}→{aft:.2f}")
         except Exception as e:

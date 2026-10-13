@@ -222,7 +222,7 @@ def lab_from_linear(lin):
                      200.0 * (f[:, 1] - f[:, 2])], axis=1)
 
 
-def analyze_normalized(img_or_rgb, roi_or_rects, ref_lab, rows, cols,
+def analyze_normalized(img_or_rgb, roi_or_rects, ref_lab, rows=4, cols=6,
                        inner=0.4, use_rects=False):
     """Imatest 默认口径: 实测亮度全局归一后求色差 (纯浮点, 无二次量化)。"""
     if use_rects:
@@ -234,7 +234,9 @@ def analyze_normalized(img_or_rgb, roi_or_rects, ref_lab, rows, cols,
     y_ref = float((lab_to_linear_rgb(np.asarray(ref_lab, dtype=float))
                   @ np.array([0.2126, 0.7152, 0.0722])).mean())
     k = y_ref / y_meas if y_meas > 0 else 1.0
-    return CCResult(ref_lab, lab_from_linear(lin * k), base.meas_rgb)
+    res = CCResult(ref_lab, lab_from_linear(lin * k), base.meas_rgb)
+    res.norm_lin = lin * k      # 归一化后的线性值(CCM 用)
+    return res
 
 
 def analyze_rects(img_rgb, patch_rects, ref_lab, inner=0.5):
